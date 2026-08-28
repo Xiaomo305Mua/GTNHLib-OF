@@ -29,15 +29,15 @@ public class TessellatorManager {
     public static final Logger LOGGER = LogManager.getLogger("TessellatorManager");
 
     private enum CaptureMode {
-        CAPTURING, // startCapturing() - batch mode until explicit stop
-        COMPILING // setCompiling() - per-draw callback mode
+        CAPTURING,
+        COMPILING
     }
 
     private static class CaptureState {
 
         final CaptureMode mode;
-        final DrawCallback callback; // null for CAPTURING mode, non-null for COMPILING
-        List<ModelQuadViewMutable> savedQuads; // Quads saved from parent when nesting starts
+        final DrawCallback callback;
+        List<ModelQuadViewMutable> savedQuads;
 
         CaptureState(CaptureMode mode, DrawCallback callback) {
             this.mode = mode;
@@ -45,9 +45,6 @@ public class TessellatorManager {
         }
     }
 
-    /**
-     * Captured geometry as a list of VBOs. Each VBO contains primitives of a single type (lines, triangles, or quads).
-     */
     @Desugar
     public record CapturedGeometry(List<VertexBuffer> vbos) {
 
@@ -76,7 +73,6 @@ public class TessellatorManager {
     private static final ThreadLocal<ArrayList<CaptureState>> captureStack = ThreadLocal.withInitial(ArrayList::new);
     private static final Thread mainThread = Thread.currentThread();
 
-    // Recursion protection (compiling is main-thread only)
     @Deprecated
     private static boolean isInCompilingCallback = false;
 
@@ -96,26 +92,16 @@ public class TessellatorManager {
         }
     }
 
-    /**
-     * Returns a thread-local tessellator for standalone use. Caller manages lifecycle.
-     */
     public static LocalTessellator getLocal() {
         return localTessellator.get();
     }
 
-    /**
-     * Enter local mode - get() will return the thread-local LocalTessellator. Use for worker threads where mod code
-     * calls Tessellator.instance directly.
-     */
     public static LocalTessellator enterLocalMode() {
         final LocalTessellator local = localTessellator.get();
         local.active = true;
         return local;
     }
 
-    /**
-     * Exit local mode and reset tessellator state.
-     */
     public static void exitLocalMode() {
         final LocalTessellator local = localTessellator.get();
         local.active = false;
@@ -127,13 +113,6 @@ public class TessellatorManager {
         return current != null && current.mode == CaptureMode.CAPTURING;
     }
 
-    /**
-     * Checks if the current (top of stack) state is COMPILING mode. Used by CapturingTessellator to determine if draw()
-     * should be intercepted for callbacks. Only the current state matters - nested CAPTURING inside COMPILING should
-     * capture, not intercept.
-     *
-     * @return true if the current state is COMPILING
-     */
     static boolean isCurrentlyCompiling() {
         CaptureState current = peekState();
         return current != null && current.mode == CaptureMode.COMPILING;
@@ -147,17 +126,11 @@ public class TessellatorManager {
         return instance == Tessellator.instance || isOnMainThread();
     }
 
-    /**
-     * Gets the current (top) capture state, or null if stack is empty.
-     */
     private static CaptureState peekState() {
         ArrayList<CaptureState> stack = captureStack.get();
         return stack.isEmpty() ? null : stack.get(stack.size() - 1);
     }
 
-    /**
-     * Gets the current capture state, throwing if not in expected mode.
-     */
     private static CaptureState requireMode(CaptureMode expected, String errorMsg) {
         ArrayList<CaptureState> stack = captureStack.get();
         if (stack.isEmpty() || stack.get(stack.size() - 1).mode != expected) {
@@ -166,9 +139,6 @@ public class TessellatorManager {
         return stack.get(stack.size() - 1);
     }
 
-    /**
-     * Sets the compiling flag on vanilla Tessellator.instance if it implements ITessellatorInstance.
-     */
     @Deprecated
     private static void setVanillaTessellatorCompiling(boolean compiling) {
         if (Tessellator.instance instanceof ITessellatorInstance tessInst) {
@@ -176,10 +146,6 @@ public class TessellatorManager {
         }
     }
 
-    /**
-     * Checks if there are any COMPILING states remaining in the stack. Scans from top to bottom (most likely to find
-     * recent COMPILING states first).
-     */
     private static boolean hasCompilingInStack(ArrayList<CaptureState> stack) {
         for (int i = stack.size() - 1; i >= 0; i--) {
             if (stack.get(i).mode == CaptureMode.COMPILING) {
@@ -189,10 +155,6 @@ public class TessellatorManager {
         return false;
     }
 
-    /**
-     * If parent state is CAPTURING, save its quads before child starts. The child will use the same collectedQuads
-     * list, so we save parent's quads and clear for child use.
-     */
     private static void saveParentQuadsIfNeeded(ArrayList<CaptureState> stack, CapturingTessellator tess) {
         if (stack.isEmpty()) {
             return;
@@ -200,7 +162,6 @@ public class TessellatorManager {
 
         CaptureState parent = stack.get(stack.size() - 1);
         if (parent.mode == CaptureMode.CAPTURING) {
-            // Save parent's quads and clear for child
             parent.savedQuads = new ArrayList<>(tess.getQuads());
             tess.getQuads().clear();
         }
@@ -214,10 +175,8 @@ public class TessellatorManager {
         ArrayList<CaptureState> stack = captureStack.get();
         final CapturingTessellator tess = capturingTessellator.get();
 
-        // Save parent's quads if parent is CAPTURING
         saveParentQuadsIfNeeded(stack, tess);
 
-        // Validate no orphan quads exist
         if (!tess.getQuads().isEmpty()) {
             throw new IllegalStateException("Tried to start capturing with existing collected Quads!");
         }
@@ -228,18 +187,15 @@ public class TessellatorManager {
         return tess;
     }
 
-    /// Stop the CapturingTessellator and return the pooled quads. The quads are valid until clearQuads() is called on
-    /// the CapturingTesselator, which must be done before starting capturing again.
     public static List<ModelQuadViewMutable> stopCapturingToPooledQuads() {
         CaptureState currentState = requireMode(CaptureMode.CAPTURING, "Tried to stop capturing when not capturing!");
         ArrayList<CaptureState> stack = captureStack.get();
 
         final CapturingTessellator tess = capturingTessellator.get();
 
-        // Flush any pending draw
         if (tess.isDrawing) tess.draw();
 
-        stack.remove(stack.size() - 1); // Pop
+        stack.remove(stack.size() - 1);
         tess.restoreTranslation();
 
         boolean isNested = !stack.isEmpty() && stack.get(stack.size() - 1).mode == CaptureMode.CAPTURING;
@@ -247,54 +203,47 @@ public class TessellatorManager {
         List<ModelQuadViewMutable> quads;
 
         if (currentState.savedQuads != null) {
-            // Had nested child - combine saved quads with any new quads
             quads = currentState.savedQuads;
             quads.addAll(tess.getQuads());
             tess.getQuads().clear();
         } else if (isNested) {
-            // We are a child - return copy of accumulated quads (will clear for parent)
             quads = new ArrayList<>(tess.getQuads());
             tess.getQuads().clear();
         } else {
-            // Non-nested common case - return accumulated quads directly
             quads = tess.getQuads();
         }
-        // Note: don't discard here - caller owns the pooled quads until clearQuads()
 
         return quads;
     }
 
-    /// Stops the CapturingTessellator, stores the quads in a buffer (based on the VertexFormat provided), and clears
-    /// the quads.
     public static ByteBuffer stopCapturingToBuffer(VertexFormat format) {
         final ByteBuffer buf = CapturingTessellator.quadsToBuffer(stopCapturingToPooledQuads(), format);
         capturingTessellator.get().clearQuads();
         return buf;
     }
 
-    /// Stops the CapturingTessellator, stores the quads in a buffer (based on the VertexFormat provided), uploads the
-    /// buffer to a new VertexBuffer, and clears the quads.
-    @Deprecated // Replaced by DirectTessellator
+    @Deprecated
     public static VertexBuffer stopCapturingToVBO(VertexFormat format) {
         return new VertexBuffer(format, GL11.GL_QUADS).upload(stopCapturingToBuffer(format));
     }
 
-    // --------------- DIRECT TESSELLATOR ---------------
-
-    public static final int DEFAULT_BUFFER_SIZE = 0x8000; // 32KB, enough to store 1024 full-sized vertices
-    private static final int BUFFER_CAPACITY = Tessellator.byteBuffer.capacity();
+    public static final int DEFAULT_BUFFER_SIZE = 0x8000;
+    private static final int BUFFER_CAPACITY = DEFAULT_BUFFER_SIZE;
     public static final int DIRECT_TESSELLATOR_STACK_DEPTH = 16;
 
-    // Instances to use for capturing to vbo's (Cannot be used outside the tessellator stack)
-    private static final DirectTessellator mainInstance = new DirectTessellator(Tessellator.byteBuffer);
-    private static final CallbackTessellator mainCallbackInstance = new CallbackTessellator(Tessellator.byteBuffer);
+    private static final DirectTessellator mainInstance;
+    private static final CallbackTessellator mainCallbackInstance;
 
-    // Any Tessellator that uses the Tessellator.byteBuffer is considered to be the "main instance"
-    // This is to prevent new buffer allocations every capture
+    static {
+        ByteBuffer sharedBuffer = ByteBuffer.allocateDirect(BUFFER_CAPACITY);
+        mainInstance = new DirectTessellator(sharedBuffer);
+        mainCallbackInstance = new CallbackTessellator(sharedBuffer);
+    }
+
     private static boolean mainInstanceInStack = false;
 
     private static final DirectTessellator[] directTessellators = new DirectTessellator[DIRECT_TESSELLATOR_STACK_DEPTH];
-    private static int directTessellatorIndex = -1; // Points to the DirectTessellator in the stack (-1 = stack empty)
+    private static int directTessellatorIndex = -1;
 
     private static DirectTessellator getDirectTessellator() {
         return directTessellators[directTessellatorIndex];
@@ -313,7 +262,7 @@ public class TessellatorManager {
             directTessellatorIndex--;
             throw new IllegalStateException("DirectTessellator stack overflow");
         }
-        mainInstanceInStack = mainInstanceInStack || tessellator.baseBuffer == Tessellator.byteBuffer;
+        mainInstanceInStack = mainInstanceInStack || tessellator == mainInstance;
         directTessellators[directTessellatorIndex] = tessellator;
     }
 
@@ -348,7 +297,7 @@ public class TessellatorManager {
         return tessellator;
     }
 
-    @Deprecated // Temporary method (to make older angelica version with newer gtnhlib versions)
+    @Deprecated
     public static CallbackTessellator startCapturingDirect(DirectDrawCallback callback) {
         return startCapturingDirect(new TessellatorCallback() {
 
@@ -375,7 +324,7 @@ public class TessellatorManager {
         if (!hasDirectTessellator()) throw new IllegalStateException("Tried to stop capturing when not capturing!");
         final DirectTessellator tessellator = getDirectTessellator();
         directTessellators[directTessellatorIndex--] = null;
-        mainInstanceInStack = mainInstanceInStack && tessellator.baseBuffer != Tessellator.byteBuffer;
+        mainInstanceInStack = mainInstanceInStack && tessellator != mainInstance;
         tessellator.onRemovedFromStack();
     }
 
@@ -387,27 +336,18 @@ public class TessellatorManager {
         return vbo;
     }
 
-    /**
-     * Stops the CapturingTessellator and returns separate VBOs for each primitive type captured. This is the preferred
-     * method when capturing mixed geometry (lines, triangles, quads).
-     *
-     * @param format The vertex format for all VBOs
-     * @return CapturedGeometry with separate VBOs (null fields for types not captured)
-     */
-    @Deprecated // Replaced in favor of DirectTessellator (see TessellatorManager for more info)
+    @Deprecated
     public static CapturedGeometry stopCapturingToGeometry(VertexFormat format) {
         CaptureState currentState = requireMode(CaptureMode.CAPTURING, "Tried to stop capturing when not capturing!");
         ArrayList<CaptureState> stack = captureStack.get();
         final CapturingTessellator tess = capturingTessellator.get();
 
-        // Flush any pending draw
         if (tess.isDrawing) tess.draw();
 
-        stack.remove(stack.size() - 1); // Pop
+        stack.remove(stack.size() - 1);
 
         tess.restoreTranslation();
 
-        // Group primitives by type using reusable lists from the tessellator
         List<ModelLine> lines = tess.lineListCache;
         List<ModelTriangle> triangles = tess.triangleListCache;
         List<ModelQuadViewMutable> quads = tess.quadListCache;
@@ -415,7 +355,6 @@ public class TessellatorManager {
         triangles.clear();
         quads.clear();
 
-        // Use indexed loops to avoid iterator allocation
         List<ModelPrimitiveView> prims = tess.getPrimitives();
         for (int i = 0, size = prims.size(); i < size; i++) {
             ModelPrimitiveView prim = prims.get(i);
@@ -424,28 +363,23 @@ public class TessellatorManager {
             } else if (prim instanceof ModelTriangle mt) {
                 triangles.add(mt);
             }
-            // Note: Quads have been moved to collectedQuads by processDrawForCapturingTessellator
         }
 
-        // Get quads from collectedQuads (where they were moved for backward compat)
         List<ModelQuadViewMutable> collectedQuads = tess.getQuads();
         for (int i = 0, size = collectedQuads.size(); i < size; i++) {
             ModelQuadViewMutable quad = collectedQuads.get(i);
             quads.add(quad);
         }
 
-        // Create VBOs for each type that has content
         List<VertexBuffer> vbos = new ArrayList<>();
         if (!lines.isEmpty()) vbos.add(createLineVBO(lines, format));
         if (!triangles.isEmpty()) vbos.add(createTriangleVBO(triangles, format));
         if (!quads.isEmpty()) vbos.add(createQuadVBO(quads, format));
 
-        // Clean up
         tess.clearPrimitives();
         tess.clearQuads();
 
         if (!stack.isEmpty() && stack.get(stack.size() - 1).mode == CaptureMode.CAPTURING) {
-            // Nested - parent continues
         } else {
             tess.discard();
         }
@@ -481,26 +415,8 @@ public class TessellatorManager {
         return new VertexBuffer(format, GL11.GL_QUADS).upload(buffer);
     }
 
-    /**
-     * Expected vertex size for primitive writing: pos(12) + color(4) + tex(8) + light(4) + normal(4) = 32 bytes
-     */
     private static final int EXPECTED_PRIMITIVE_VERTEX_SIZE = 32;
 
-    /**
-     * Writes a primitive's vertices to the buffer using the standard vertex layout.
-     * <p>
-     * <b>IMPORTANT:</b> This method assumes the vertex format matches the layout:
-     * <ul>
-     * <li>Position: 3 floats (12 bytes)</li>
-     * <li>Color: 1 int ABGR (4 bytes)</li>
-     * <li>Texture: 2 floats (8 bytes)</li>
-     * <li>Light: 1 int (4 bytes)</li>
-     * <li>Normal: 1 int (4 bytes)</li>
-     * </ul>
-     * Total: 32 bytes per vertex. The format's vertexSize must match.
-     *
-     * @throws IllegalArgumentException if format.getVertexSize() != 32
-     */
     private static void writePrimitiveToBuffer(ModelPrimitiveView prim, ByteBuffer buffer, VertexFormat format) {
         if (format.getVertexSize() != EXPECTED_PRIMITIVE_VERTEX_SIZE) {
             throw new IllegalArgumentException(
@@ -510,33 +426,23 @@ public class TessellatorManager {
                             + ". Use a compatible format or implement a custom primitive writer.");
         }
 
-        // Write each vertex of the primitive
         for (int i = 0; i < prim.getVertexCount(); i++) {
-            // Position (always present)
             buffer.putFloat(prim.getX(i));
             buffer.putFloat(prim.getY(i));
             buffer.putFloat(prim.getZ(i));
 
-            // Color (ABGR format for OpenGL)
             buffer.putInt(prim.getColor(i));
 
-            // Texture coordinates
             buffer.putFloat(prim.getTexU(i));
             buffer.putFloat(prim.getTexV(i));
 
-            // Light (packed lightmap)
             buffer.putInt(prim.getLight(i));
 
-            // Normal (packed)
             buffer.putInt(prim.getForgeNormal(i));
         }
     }
 
-    /**
-     * Populates the passed-in VBO with the data from the CapturingTessellator. If the passed-in VBO is null, it will
-     * create & return a new one.
-     */
-    @Deprecated // Replaced by DirectTessellator
+    @Deprecated
     public static VertexBuffer stopCapturingToVBO(VertexBuffer vbo, VertexFormat format) {
         if (vbo == null) {
             vbo = new VertexBuffer(format, GL11.GL_QUADS);
@@ -544,21 +450,12 @@ public class TessellatorManager {
         return vbo.upload(stopCapturingToBuffer(format));
     }
 
-    /**
-     * Same as stopCapturingToVBO, but now wrapping the VBO inside of a VAO for safer & cached attrib pointers. <br>
-     * This method is in 99% of cases better since it's both faster and safer. <br>
-     * If VAO's are not supported, this will create a VBO instead.
-     */
-    @Deprecated // Replaced by DirectTessellator
+    @Deprecated
     public static VertexBuffer stopCapturingToVAO(VertexFormat format) {
         return VAOManager.createVAO(format, GL11.GL_QUADS).upload(stopCapturingToBuffer(format));
     }
 
-    /**
-     * Populates the passed-in VAO with the data from the CapturingTessellator. If the passed-in VAO is null, it will
-     * create & return a new one.
-     */
-    @Deprecated // Replaced by DirectTessellator
+    @Deprecated
     public static VertexBuffer stopCapturingToVAO(VertexBuffer vao, VertexFormat format) {
         if (vao == null) {
             vao = VAOManager.createVAO(format, GL11.GL_QUADS);
@@ -566,28 +463,11 @@ public class TessellatorManager {
         return vao.upload(stopCapturingToBuffer(format));
     }
 
-    /**
-     * Fast check called from ASM-injected bytecode in Tessellator.draw(). Checks if the Tessellator instance is in
-     * compiling mode (display list compilation active).
-     *
-     * @param tess The Tessellator instance
-     * @return true if draw() should be intercepted, false otherwise
-     */
     public static boolean shouldInterceptDraw(Tessellator tess) {
         return ((ITessellatorInstance) tess).gtnhlib$isCompiling()
-                || (hasDirectTessellator() && !isCurrentlyCapturing()); // Capturing has priority over Direct
+                || (hasDirectTessellator() && !isCurrentlyCapturing());
     }
 
-    /**
-     * Intercepts Tessellator.draw() during display list compilation. Extracts geometry from the vanilla Tessellator's
-     * buffer and invokes the compiling callback. Only called when shouldInterceptDraw returns true. This is main-thread
-     * only (display list compilation happens on the main thread).
-     * <p>
-     * GL_QUADS go to collectedQuads; GL_TRIANGLES and other modes go to collectedPrimitives as proper primitives.
-     *
-     * @param tess The vanilla Tessellator instance
-     * @return The result that draw() should return
-     */
     public static int interceptDraw(Tessellator tess) {
         if (hasDirectTessellator()) {
             final DirectTessellator tessellator = getDirectTessellator();
@@ -597,51 +477,46 @@ public class TessellatorManager {
             return result;
         }
 
-        // Detect recursive draw() calls from within callback
         if (isInCompilingCallback) {
             throw new IllegalStateException(
                     "Tessellator.draw() called from within a compiling callback - this is not allowed!");
         }
 
-        // Get callback from stack
         CaptureState current = requireMode(CaptureMode.COMPILING, "interceptDraw called but not in COMPILING mode!");
         if (current.callback == null) {
             throw new IllegalStateException("interceptDraw called but callback is null!");
         }
 
-        // Build geometry from vanilla tess's buffer using main thread capturing tessellator's infrastructure
-        // COMPILING mode: Only GL_QUADS go to quads; triangles and other primitives stay as proper primitives
         final CapturingTessellator helper = capturingTessellator.get();
         if (tess.drawMode == GL11.GL_QUADS) {
             QuadExtractor.buildQuadsFromBuffer(
                     tess.rawBuffer,
                     tess.vertexCount,
                     tess.drawMode,
-                    true, // Vanilla always has texture
+                    true,
                     tess.hasBrightness,
                     tess.hasColor,
                     tess.hasNormals,
                     0,
                     0,
-                    0, // Vanilla has no offset
-                    -1, // No shaderBlockId
+                    0,
+                    -1,
                     helper.quadPool,
                     helper.collectedQuads,
                     helper.flags);
         } else {
-            // GL_TRIANGLES, GL_LINES, GL_LINE_STRIP, etc. → primitives (not quadrangulated)
             PrimitiveExtractor.buildPrimitivesFromBuffer(
                     tess.rawBuffer,
                     tess.vertexCount,
                     tess.drawMode,
-                    true, // Vanilla always has texture
+                    true,
                     tess.hasBrightness,
                     tess.hasColor,
                     tess.hasNormals,
                     0,
                     0,
-                    0, // Vanilla has no offset
-                    -1, // No shaderBlockId
+                    0,
+                    -1,
                     helper.quadPool,
                     helper.triPool,
                     helper.linePool,
@@ -649,7 +524,6 @@ public class TessellatorManager {
                     helper.flags);
         }
 
-        // Invoke callback with collected geometry (protect against recursion)
         isInCompilingCallback = true;
         try {
             current.callback.onDraw(helper.collectedQuads, helper.collectedPrimitives, helper.flags);
@@ -664,22 +538,11 @@ public class TessellatorManager {
         return result;
     }
 
-    /**
-     * Helper for CapturingTessellator to process its draw() call using shared logic.
-     * <p>
-     * Mode-specific behavior:
-     * <ul>
-     * <li>COMPILING: Only GL_QUADS → quads; GL_TRIANGLES and other modes → primitives (proper triangles)</li>
-     * <li>CAPTURING: GL_QUADS and GL_TRIANGLES → quads (quadrangulated for backward compat); other modes →
-     * primitives</li>
-     * </ul>
-     */
     static int processDrawForCapturingTessellator(CapturingTessellator tess) {
         final CaptureState current = peekState();
         final boolean isCompiling = current != null && current.mode == CaptureMode.COMPILING;
 
         if (isCompiling) {
-            // COMPILING: Only GL_QUADS to quads; triangles and other primitives stay as proper primitives
             if (tess.drawMode == GL11.GL_QUADS) {
                 QuadExtractor.buildQuadsFromBuffer(
                         tess.rawBuffer,
@@ -697,7 +560,6 @@ public class TessellatorManager {
                         tess.collectedQuads,
                         tess.flags);
             } else {
-                // GL_TRIANGLES, GL_LINES, GL_LINE_STRIP, etc. → primitives (not quadrangulated)
                 PrimitiveExtractor.buildPrimitivesFromBuffer(
                         tess.rawBuffer,
                         tess.vertexCount,
@@ -716,12 +578,10 @@ public class TessellatorManager {
                         tess.collectedPrimitives,
                         tess.flags);
             }
-            // Invoke callback and clear
             current.callback.onDraw(tess.collectedQuads, tess.collectedPrimitives, tess.flags);
             tess.clearQuads();
             tess.clearPrimitives();
         } else {
-            // CAPTURING: GL_QUADS and GL_TRIANGLES to quads (backward compat quadrangulation)
             if (tess.drawMode == GL11.GL_QUADS || tess.drawMode == GL11.GL_TRIANGLES) {
                 QuadExtractor.buildQuadsFromBuffer(
                         tess.rawBuffer,
@@ -739,7 +599,6 @@ public class TessellatorManager {
                         tess.collectedQuads,
                         tess.flags);
             } else {
-                // GL_LINES, GL_LINE_STRIP, etc. → primitives
                 PrimitiveExtractor.buildPrimitivesFromBuffer(
                         tess.rawBuffer,
                         tess.vertexCount,
@@ -758,7 +617,6 @@ public class TessellatorManager {
                         tess.collectedPrimitives,
                         tess.flags);
             }
-            // No callback - geometry stays until stop is called
         }
 
         final int result = tess.rawBufferIndex * 4;
@@ -768,11 +626,9 @@ public class TessellatorManager {
 
     @Deprecated
     public static void cleanup() {
-        // Ensure we've cleaned everything up
         final CapturingTessellator tessellator = capturingTessellator.get();
         final ArrayList<CaptureState> stack = captureStack.get();
 
-        // Check if we're cleaning up during active compiling
         if (isOnMainThread()) {
             final CaptureState current = peekState();
             if (current != null && current.mode == CaptureMode.COMPILING) {
@@ -790,18 +646,7 @@ public class TessellatorManager {
         isInCompilingCallback = false;
     }
 
-    /**
-     * Set display list compiling mode with per-draw callbacks. While compiling, each Tessellator.draw() will
-     * automatically invoke the callback. The callback receives only the quads from that specific draw call.
-     *
-     * Nesting: Compiling can be nested inside capturing mode (for VBO capture of display list contents), and COMPILING
-     * can now be nested inside COMPILING (for nested glNewList() calls). Each nested level gets its own callback
-     * invoked independently.
-     *
-     * @param callback Called for each draw() with the newly captured quads
-     * @throws IllegalArgumentException if callback is null
-     */
-    @Deprecated // Replaced in favor of DirectTessellator (see TessellatorManager for more info)
+    @Deprecated
     public static void setCompiling(DrawCallback callback) {
         if (callback == null) throw new IllegalArgumentException("Callback cannot be null");
         if (!isOnMainThread()) {
@@ -810,9 +655,6 @@ public class TessellatorManager {
 
         ArrayList<CaptureState> stack = captureStack.get();
 
-        // Nested COMPILING is now allowed for nested display list compilation
-        // No check needed - just push a new COMPILING state
-
         final CapturingTessellator tess = capturingTessellator.get();
         if (!tess.getQuads().isEmpty()) {
             throw new IllegalStateException("Tried to start compiling with existing collected Quads!");
@@ -820,22 +662,11 @@ public class TessellatorManager {
 
         stack.add(new CaptureState(CaptureMode.COMPILING, callback));
 
-        // Set flag on Tessellator.instance if it exists and implements ITessellatorInstance
-        // This flag stays true as long as ANY compiling state exists
         setVanillaTessellatorCompiling(true);
         tess.storeTranslation();
     }
 
-    /**
-     * Stop display list compiling mode. If there's a pending draw, flushes it and invokes callback one final time.
-     * Clears the callback and any remaining quads.
-     *
-     * For nested COMPILING: Only the innermost (current) compilation is stopped. The parent compilation continues. The
-     * compiling flag is only cleared when ALL compilation levels have been exited.
-     *
-     * @throws IllegalStateException if not currently compiling
-     */
-    @Deprecated // Replaced in favor of DirectTessellator (see TessellatorManager for more info)
+    @Deprecated
     public static void stopCompiling() {
         if (!isOnMainThread()) {
             throw new IllegalStateException("stopCompiling() can only be called from main thread!");
@@ -846,20 +677,16 @@ public class TessellatorManager {
 
         final CapturingTessellator tess = capturingTessellator.get();
 
-        // Flush any pending draw BEFORE popping stack (draw will still trigger callback via stack check)
         if (tess.isDrawing) {
             tess.draw();
         }
 
-        // Now pop the stack
         stack.remove(stack.size() - 1);
 
-        // Only clear flag if there are no more COMPILING states in the stack
         if (!hasCompilingInStack(stack)) {
             setVanillaTessellatorCompiling(false);
         }
 
-        // Clear any remaining quads (shouldn't be any if callback worked correctly)
         tess.clearQuads();
         tess.discard();
         tess.restoreTranslation();
@@ -879,12 +706,6 @@ public class TessellatorManager {
         return Tessellator.instance;
     }
 
-    /**
-     * Fast path to get the Tessellator used in the main thread. Does not check if this is called on the main thread.
-     * This should only be used if you are 100% certain that it only gets called in the main thread.
-     *
-     * @return Tessellator.instance, or DirectTessellator if currently capturing.
-     */
     public static Tessellator getMainThreadTessellator() {
         if (hasDirectTessellator()) return getDirectTessellator();
         return Tessellator.instance;
