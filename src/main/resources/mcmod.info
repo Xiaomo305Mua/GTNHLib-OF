@@ -6,7 +6,7 @@
 		"description": "GTNHLib. OptiFine compatible.",
 		"version": "${modVersion}",
 		"mcversion": "${minecraftVersion}",
-		"url": "https://github.com/GTNewHorizons/GTNHLib",
+		"url": "https://github.com/Xiaomo305Mua/GTNHLib-OF",
 		"updateUrl": "",
 		"authorList": ["mitchej123", "Xiaomo305Mua"],
 		"credits": "",
