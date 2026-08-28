@@ -3,7 +3,7 @@ GTNHLib
 
 ## About
 
-Shared code library for GTNH mods.
+Shared code library for GTNH mods. OptiFine compatible, but may cause some issues.
 
 ## Features
 
