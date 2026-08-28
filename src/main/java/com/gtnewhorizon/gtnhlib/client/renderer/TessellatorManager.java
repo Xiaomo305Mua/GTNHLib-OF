@@ -72,7 +72,7 @@ public class TessellatorManager {
 
     private static final ThreadLocal<ArrayList<CaptureState>> captureStack = ThreadLocal.withInitial(ArrayList::new);
     private static final Thread mainThread = Thread.currentThread();
-
+// test
     @Deprecated
     private static boolean isInCompilingCallback = false;
 
